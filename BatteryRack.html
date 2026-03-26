@@ -95,14 +95,14 @@
           
           const postGeom = new THREE.BoxGeometry(0.06, rackHeight, 0.06);
           [[-1.7, 0.8, 0.2], [1.7, 0.8, 0.2], [-1.7, 0.8, -0.2], [1.7, 0.8, -0.2]].forEach(p => {
-            const m = new THREE.Mesh(postGeom, frameMat);
+            const m = new THREE.Mesh(postGeom, frameMat.clone());
             m.position.set(...p);
             group.add(m);
             this.grabbables.push(m);
           });
 
           [0.05, 0.8].forEach(y => {
-            const s = new THREE.Mesh(new THREE.BoxGeometry(rackWidth, 0.04, rackDepth), frameMat);
+            const s = new THREE.Mesh(new THREE.BoxGeometry(rackWidth, 0.04, rackDepth), frameMat.clone());
             s.position.y = y;
             group.add(s);
           });
@@ -142,7 +142,10 @@
           group.userData.isUnit = true;
           this.add(group);
 
-          const box = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.3), new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.5 }));
+          const box = new THREE.Mesh(
+            new THREE.BoxGeometry(0.6, 0.8, 0.3), 
+            new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.5 })
+          );
           group.add(box);
           this.grabbables.push(box);
 
@@ -322,26 +325,35 @@
 
         onSqueezeStart(event) {
           const c = event.target;
+          
+          // 1. Check for Jumper Clips
           const clips = [];
           this.jumpers.forEach(j => clips.push(j.clipA, j.clipB));
           const validClips = this._getValidTargets(clips);
-          const clipHit = xb.core.input.intersectObjectByController(c, validClips);
-          if (clipHit && clipHit.length > 0) {
-            this.grabbingClip = { object: clipHit[0].object, controller: c };
-            this.jumpers.forEach(j => {
-              if (j.clipA === clipHit[0].object) j.attachedA = null;
-              if (j.clipB === clipHit[0].object) j.attachedB = null;
-            });
-            return;
-          }
+          try {
+            const clipHit = xb.core.input.intersectObjectByController(c, validClips);
+            if (clipHit && clipHit.length > 0) {
+              this.grabbingClip = { object: clipHit[0].object, controller: c };
+              this.jumpers.forEach(j => {
+                if (j.clipA === clipHit[0].object) j.attachedA = null;
+                if (j.clipB === clipHit[0].object) j.attachedB = null;
+              });
+              return;
+            }
+          } catch(e) {}
 
+          // 2. Check for Equipment Units
           const validUnits = this._getValidTargets(this.grabbables);
-          const unitHit = xb.core.input.intersectObjectByController(c, validUnits);
-          if (unitHit && unitHit.length > 0) {
-            let parent = unitHit[0].object;
-            while(parent && !parent.userData.isUnit) parent = parent.parent;
-            if (parent) this.grabbingUnit = { object: parent, controller: c };
-          }
+          try {
+            const unitHit = xb.core.input.intersectObjectByController(c, validUnits);
+            if (unitHit && unitHit.length > 0) {
+              let parent = unitHit[0].object;
+              while(parent && !parent.userData.isUnit) parent = parent.parent;
+              if (parent) {
+                this.grabbingUnit = { object: parent, controller: c };
+              }
+            }
+          } catch(e) {}
         }
 
         onSqueezeEnd() {
@@ -372,17 +384,20 @@
           const controllers = xb.core.input.controllers;
           if (!controllers || controllers.length === 0) return;
 
+          // Equipment Unit Movement (Slides along physical surfaces)
           if (this.grabbingUnit) {
             const { object, controller } = this.grabbingUnit;
             const intersection = xb.user.select(xb.core.depth.depthMesh, controller);
             if (intersection) {
-              object.position.lerp(intersection.point, 0.1);
+              object.position.lerp(intersection.point, 0.2);
+              // Maintain upright orientation but face user
               const lookTarget = xb.core.camera.position.clone();
               lookTarget.y = object.position.y;
               object.lookAt(lookTarget);
             }
           }
 
+          // Probe Visual Sync
           controllers.forEach(c => {
             const h = c.userData.handedness;
             if (h && this.probes[h]) {
@@ -390,6 +405,7 @@
             }
           });
 
+          // Clip Movement Logic
           if (this.grabbingClip) {
             const { object, controller } = this.grabbingClip;
             const targetPos = controller.position.clone();
@@ -397,12 +413,28 @@
             object.position.lerp(targetPos, 0.2);
           }
 
+          // Dynamic Jumper Wire Geometry
           this.jumpers.forEach(j => {
             const curve = new THREE.CatmullRomCurve3([j.clipA.position.clone(), j.clipB.position.clone()]);
             if (j.tube.geometry) j.tube.geometry.dispose();
             j.tube.geometry = new THREE.TubeGeometry(curve, 10, 0.005, 8, false);
           });
 
+          // Equipment Highlight (Hover effect)
+          const validGrabbables = this._getValidTargets(this.grabbables);
+          validGrabbables.forEach(g => { if(g.material) g.material.emissiveIntensity = 0; });
+          controllers.forEach(c => {
+            try {
+              const hover = xb.core.input.intersectObjectByController(c, validGrabbables);
+              if (hover && hover.length > 0) {
+                const mesh = hover[0].object;
+                if (mesh.material) mesh.material.emissiveIntensity = 0.3;
+                if (mesh.material) mesh.material.emissive.set(0xffffff);
+              }
+            } catch(e) {}
+          });
+
+          // Multimeter Terminal Contact logic
           const activeTerminals = this._getValidTargets(this.terminals);
           activeTerminals.forEach(t => { if(t.material) t.material.emissiveIntensity = 0.1; });
 
