@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <title>High Voltage Disconnect Lab | XR Blocks</title>
+    <title>Modular Mixed Reality Lab | XR Blocks</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
     <link type="text/css" rel="stylesheet" href="https://xrblocks.github.io/css/xr.css" />
     <script>
@@ -32,17 +32,19 @@
       import * as xb from 'xrblocks';
 
       /**
-       * Industrial Battery Lab with Disconnect Panel and Switch logic.
-       * Fixed: TypeError 'test' by strictly filtering raycast target arrays.
+       * Modular Mixed Reality Battery Lab.
+       * Supports individual piece grabbing and placement on real-world surfaces.
        */
       class BatteryLabScript extends xb.Script {
         constructor() {
           super();
           this.terminals = [];
           this.jumpers = [];
-          this.grabbingClip = null;
           
-          // State
+          // Interaction States
+          this.grabbingClip = null;
+          this.grabbingUnit = null; 
+          
           this.nodeVoltages = new Map();
           this.panelOpen = false;
           this.switchOn = false;
@@ -51,44 +53,43 @@
           this.panelDoor = null;
           this.switchLever = null;
           this.meterDisplay = null;
-          this.activeNegPotential = null;
-          this.activePosPotential = null;
           this.probes = { left: null, right: null };
           
-          // Selectable objects for clicking (non-terminals)
           this.clickables = [];
+          this.grabbables = []; 
         }
 
         async init() {
-          this.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2));
+          // Mixed Reality Lighting
+          this.add(new THREE.HemisphereLight(0xffffff, 0xbbbbbb, 2));
           const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
           dirLight.position.set(5, 10, 5);
           this.add(dirLight);
 
-          const floor = new THREE.Mesh(
-            new THREE.PlaneGeometry(30, 30),
-            new THREE.MeshStandardMaterial({ color: 0x111111 })
-          );
-          floor.rotation.x = -Math.PI / 2;
-          this.add(floor);
-
-          this.createMetalRack();
-          this.createDisconnectPanel();
-          this.createMultimeterBody();
-          this.createJumpers(12);
-          this.setupHandProbes();
+          // Create equipment as independent units
+          this.createModularRack(new THREE.Vector3(-1, 0, -1.2));
+          this.createModularPanel(new THREE.Vector3(1, 0.8, -1.0));
+          this.createModularMultimeter(new THREE.Vector3(0.3, 0.8, -0.6));
+          this.createJumperBin(new THREE.Vector3(-0.3, 0.8, -0.6));
           
+          this.setupHandProbes();
           this.solveCircuit();
+
+          // Standard XR visual indicators
+          xb.showReticleOnDepthMesh(true);
         }
 
-        /** Utility to safely filter arrays for Three.js raycasting */
+        /** Safety utility for filtering interaction targets */
         _getValidTargets(arr) {
-          return (arr || []).filter(obj => obj && obj.isObject3D && obj.layers);
+          return (arr || []).filter(obj => obj && obj.isObject3D && obj.visible);
         }
 
-        createMetalRack() {
-          const rackGroup = new THREE.Group();
-          rackGroup.position.set(-0.8, 0, -2.5);
+        createModularRack(pos) {
+          const group = new THREE.Group();
+          group.position.copy(pos);
+          group.userData.isUnit = true;
+          this.add(group);
+
           const rackWidth = 3.5, rackHeight = 1.6, rackDepth = 0.5;
           const frameMat = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.8 });
           
@@ -96,21 +97,22 @@
           [[-1.7, 0.8, 0.2], [1.7, 0.8, 0.2], [-1.7, 0.8, -0.2], [1.7, 0.8, -0.2]].forEach(p => {
             const m = new THREE.Mesh(postGeom, frameMat);
             m.position.set(...p);
-            rackGroup.add(m);
+            group.add(m);
+            this.grabbables.push(m);
           });
+
           [0.05, 0.8].forEach(y => {
             const s = new THREE.Mesh(new THREE.BoxGeometry(rackWidth, 0.04, rackDepth), frameMat);
             s.position.y = y;
-            rackGroup.add(s);
+            group.add(s);
           });
 
           let idx = 0;
           [0.22, 0.97].forEach(y => {
             for(let i=0; i<10; i++) {
-              this.addBattery(rackGroup, -1.5 + (i * 0.33), y, idx++);
+              this.addBattery(group, -1.5 + (i * 0.33), y, idx++);
             }
           });
-          this.add(rackGroup);
         }
 
         addBattery(parent, x, y, index) {
@@ -131,51 +133,37 @@
 
           this.terminals.push(tNeg, tPos);
           parent.add(b);
-          
           if (index === 0) tNeg.userData.isGround = true;
         }
 
-        createDisconnectPanel() {
-          const panelRoot = new THREE.Group();
-          panelRoot.position.set(1.5, 1.2, -2.0);
-          this.add(panelRoot);
+        createModularPanel(pos) {
+          const group = new THREE.Group();
+          group.position.copy(pos);
+          group.userData.isUnit = true;
+          this.add(group);
 
-          const box = new THREE.Mesh(
-            new THREE.BoxGeometry(0.6, 0.8, 0.3),
-            new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.5 })
-          );
-          panelRoot.add(box);
+          const box = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.3), new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.5 }));
+          group.add(box);
+          this.grabbables.push(box);
 
           const doorGroup = new THREE.Group();
           doorGroup.position.set(-0.3, 0, 0.15);
           this.panelDoor = doorGroup;
-          
-          const doorMesh = new THREE.Mesh(
-            new THREE.BoxGeometry(0.6, 0.8, 0.02),
-            new THREE.MeshStandardMaterial({ color: 0x666666 })
-          );
+          const doorMesh = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.02), new THREE.MeshStandardMaterial({ color: 0x666666 }));
           doorMesh.position.set(0.3, 0, 0);
           doorGroup.add(doorMesh);
           
-          const handle = new THREE.Mesh(
-            new THREE.BoxGeometry(0.05, 0.1, 0.05),
-            new THREE.MeshStandardMaterial({ color: 0x222222 })
-          );
+          const handle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.05), new THREE.MeshStandardMaterial({ color: 0x222222 }));
           handle.position.set(0.55, 0, 0.02);
           handle.userData.isDoor = true;
           doorGroup.add(handle);
           this.clickables.push(handle);
-          
-          panelRoot.add(doorGroup);
+          group.add(doorGroup);
 
           const leverBase = new THREE.Group();
           leverBase.position.set(0, 0.1, 0);
-          panelRoot.add(leverBase);
-          
-          const handleBar = new THREE.Mesh(
-            new THREE.BoxGeometry(0.04, 0.2, 0.04),
-            new THREE.MeshStandardMaterial({ color: 0xaa0000 })
-          );
+          group.add(leverBase);
+          const handleBar = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.2, 0.04), new THREE.MeshStandardMaterial({ color: 0xaa0000 }));
           handleBar.position.y = 0.1;
           const leverGroup = new THREE.Group();
           leverGroup.add(handleBar);
@@ -187,23 +175,58 @@
 
           this.tInPos = this.createTerminal(0xcc0000, "PANEL-IN+", -1);
           this.tInPos.position.set(-0.15, -0.2, 0.05);
-          panelRoot.add(this.tInPos);
+          group.add(this.tInPos);
           this.terminals.push(this.tInPos);
 
           this.tInNeg = this.createTerminal(0x222222, "PANEL-IN-", -1);
           this.tInNeg.position.set(-0.15, -0.3, 0.05);
-          panelRoot.add(this.tInNeg);
+          group.add(this.tInNeg);
           this.terminals.push(this.tInNeg);
 
           this.tOutPos = this.createTerminal(0xcc0000, "PANEL-OUT+", -1);
           this.tOutPos.position.set(0.15, -0.2, 0.05);
-          panelRoot.add(this.tOutPos);
+          group.add(this.tOutPos);
           this.terminals.push(this.tOutPos);
 
           this.tOutNeg = this.createTerminal(0x222222, "PANEL-OUT-", -1);
           this.tOutNeg.position.set(0.15, -0.3, 0.05);
-          panelRoot.add(this.tOutNeg);
+          group.add(this.tOutNeg);
           this.terminals.push(this.tOutNeg);
+        }
+
+        createModularMultimeter(pos) {
+          const group = new THREE.Group();
+          group.position.copy(pos);
+          group.userData.isUnit = true;
+          this.add(group);
+
+          const body = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.4), new THREE.MeshStandardMaterial({color: 0xffaa00}));
+          group.add(body);
+          this.grabbables.push(body);
+
+          const screen = new xb.SpatialPanel({ width: 0.25, height: 0.15, backgroundColor: '#050a05' });
+          screen.position.set(0, 0.051, 0.05); screen.rotation.x = -Math.PI/2;
+          group.add(screen);
+          this.meterDisplay = screen.addGrid().addRow().addText({ text: '0.00 V', fontSize: 0.06, fontColor: '#55ff55' });
+        }
+
+        createJumperBin(pos) {
+          const group = new THREE.Group();
+          group.position.copy(pos);
+          group.userData.isUnit = true;
+          this.add(group);
+
+          const box = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.1, 0.6), new THREE.MeshStandardMaterial({color: 0x222222}));
+          group.add(box);
+          this.grabbables.push(box);
+
+          for(let i=0; i<12; i++) {
+            const jumper = this.createJumper();
+            jumper.clipA.position.set(-0.3 + (i*0.06), 0.1, -0.1);
+            jumper.clipB.position.set(-0.3 + (i*0.06), 0.1, 0.1);
+            group.add(jumper.group);
+            this.jumpers.push(jumper);
+          }
         }
 
         createTerminal(color, id, batteryIdx) {
@@ -214,21 +237,6 @@
           t.userData = { id, batteryIdx, isPos: id.includes('+'), connections: [] };
           t.updateMatrixWorld(true);
           return t;
-        }
-
-        createJumpers(count) {
-          const bin = new THREE.Group();
-          bin.position.set(-1.2, 0.8, -1.0);
-          this.add(bin);
-          bin.add(new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.1, 0.6), new THREE.MeshStandardMaterial({color: 0x222222})));
-
-          for(let i=0; i<count; i++) {
-            const jumper = this.createJumper();
-            jumper.clipA.position.set(-0.3 + (i*0.06), 0.1, -0.1);
-            jumper.clipB.position.set(-0.3 + (i*0.06), 0.1, 0.1);
-            bin.add(jumper.group);
-            this.jumpers.push(jumper);
-          }
         }
 
         createJumper() {
@@ -256,17 +264,6 @@
           };
           this.probes.left = create(0x111111);
           this.probes.right = create(0x990000);
-        }
-
-        createMultimeterBody() {
-          const body = new THREE.Group();
-          body.position.set(1.5, 0.8, -1.2);
-          body.add(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.4), new THREE.MeshStandardMaterial({color: 0xffaa00})));
-          const screen = new xb.SpatialPanel({ width: 0.25, height: 0.15, backgroundColor: '#050a05' });
-          screen.position.set(0, 0.051, 0.05); screen.rotation.x = -Math.PI/2;
-          body.add(screen);
-          this.meterDisplay = screen.addGrid().addRow().addText({ text: '0.00 V', fontSize: 0.06, fontColor: '#55ff55' });
-          this.add(body);
         }
 
         solveCircuit() {
@@ -307,8 +304,6 @@
         onSelectStart(event) {
           const c = event.target;
           const targets = this._getValidTargets(this.clickables);
-          if (targets.length === 0) return;
-          
           try {
             const hit = xb.core.input.intersectObjectByController(c, targets);
             if (hit && hit.length > 0) {
@@ -330,49 +325,65 @@
           const clips = [];
           this.jumpers.forEach(j => clips.push(j.clipA, j.clipB));
           const validClips = this._getValidTargets(clips);
-          if (validClips.length === 0) return;
+          const clipHit = xb.core.input.intersectObjectByController(c, validClips);
+          if (clipHit && clipHit.length > 0) {
+            this.grabbingClip = { object: clipHit[0].object, controller: c };
+            this.jumpers.forEach(j => {
+              if (j.clipA === clipHit[0].object) j.attachedA = null;
+              if (j.clipB === clipHit[0].object) j.attachedB = null;
+            });
+            return;
+          }
 
-          try {
-            const hit = xb.core.input.intersectObjectByController(c, validClips);
-            if (hit && hit.length > 0) {
-              this.grabbingClip = { object: hit[0].object, controller: c };
-              this.jumpers.forEach(j => {
-                if (j.clipA === hit[0].object) j.attachedA = null;
-                if (j.clipB === hit[0].object) j.attachedB = null;
-              });
-            }
-          } catch(e) {}
+          const validUnits = this._getValidTargets(this.grabbables);
+          const unitHit = xb.core.input.intersectObjectByController(c, validUnits);
+          if (unitHit && unitHit.length > 0) {
+            let parent = unitHit[0].object;
+            while(parent && !parent.userData.isUnit) parent = parent.parent;
+            if (parent) this.grabbingUnit = { object: parent, controller: c };
+          }
         }
 
         onSqueezeEnd() {
-          if (!this.grabbingClip) return;
-          const clip = this.grabbingClip.object;
-          let closest = null, minDist = 0.15;
-          const validTerminals = this._getValidTargets(this.terminals);
-          
-          validTerminals.forEach(t => {
-            const d = t.getWorldPosition(new THREE.Vector3()).distanceTo(clip.getWorldPosition(new THREE.Vector3()));
-            if (d < minDist) { minDist = d; closest = t; }
-          });
-          if (closest) {
-            const worldPos = closest.getWorldPosition(new THREE.Vector3());
-            clip.parent.worldToLocal(worldPos);
-            clip.position.copy(worldPos);
-            this.jumpers.forEach(j => {
-              if (j.clipA === clip) j.attachedA = closest;
-              if (j.clipB === clip) j.attachedB = closest;
+          if (this.grabbingClip) {
+            const clip = this.grabbingClip.object;
+            let closest = null, minDist = 0.15;
+            const validTerminals = this._getValidTargets(this.terminals);
+            validTerminals.forEach(t => {
+              const d = t.getWorldPosition(new THREE.Vector3()).distanceTo(clip.getWorldPosition(new THREE.Vector3()));
+              if (d < minDist) { minDist = d; closest = t; }
             });
+            if (closest) {
+              const worldPos = closest.getWorldPosition(new THREE.Vector3());
+              clip.parent.worldToLocal(worldPos);
+              clip.position.copy(worldPos);
+              this.jumpers.forEach(j => {
+                if (j.clipA === clip) j.attachedA = closest;
+                if (j.clipB === clip) j.attachedB = closest;
+              });
+            }
+            this.grabbingClip = null;
+            this.solveCircuit();
           }
-          this.grabbingClip = null;
-          this.solveCircuit();
+          this.grabbingUnit = null;
         }
 
         update() {
           const controllers = xb.core.input.controllers;
           if (!controllers || controllers.length === 0) return;
 
+          if (this.grabbingUnit) {
+            const { object, controller } = this.grabbingUnit;
+            const intersection = xb.user.select(xb.core.depth.depthMesh, controller);
+            if (intersection) {
+              object.position.lerp(intersection.point, 0.1);
+              const lookTarget = xb.core.camera.position.clone();
+              lookTarget.y = object.position.y;
+              object.lookAt(lookTarget);
+            }
+          }
+
           controllers.forEach(c => {
-            if (!c) return;
             const h = c.userData.handedness;
             if (h && this.probes[h]) {
               if (this.probes[h].parent !== c) c.add(this.probes[h]);
@@ -392,34 +403,28 @@
             j.tube.geometry = new THREE.TubeGeometry(curve, 10, 0.005, 8, false);
           });
 
-          this.activeNegPotential = null;
-          this.activePosPotential = null;
           const activeTerminals = this._getValidTargets(this.terminals);
           activeTerminals.forEach(t => { if(t.material) t.material.emissiveIntensity = 0.1; });
 
-          if (activeTerminals.length > 0) {
-            controllers.forEach(c => {
-              if (!c) return;
-              const h = c.userData.handedness;
-              try {
-                const hit = xb.core.input.intersectObjectByController(c, activeTerminals);
-                if (hit && hit.length > 0) {
-                  const node = hit[0].object;
-                  node.material.emissiveIntensity = 2.0;
-                  const v = this.nodeVoltages.get(node);
-                  if (h === 'left') this.activeNegPotential = v;
-                  else if (h === 'right') this.activePosPotential = v;
-                }
-              } catch(e) {}
-            });
-          }
+          let negV = null, posV = null;
+          controllers.forEach(c => {
+            const h = c.userData.handedness;
+            try {
+              const hit = xb.core.input.intersectObjectByController(c, activeTerminals);
+              if (hit && hit.length > 0) {
+                const node = hit[0].object;
+                node.material.emissiveIntensity = 2.0;
+                const v = this.nodeVoltages.get(node);
+                if (h === 'left') negV = v;
+                else if (h === 'right') posV = v;
+              }
+            } catch(e) {}
+          });
 
           if (this.meterDisplay) {
-            if (this.activeNegPotential !== undefined && this.activePosPotential !== undefined && 
-                this.activeNegPotential !== null && this.activePosPotential !== null) {
-              const diff = this.activePosPotential - this.activeNegPotential;
-              this.meterDisplay.setText(`${diff.toFixed(2)} V`);
-            } else if (this.activeNegPotential !== null || this.activePosPotential !== null) {
+            if (negV !== null && posV !== null) {
+              this.meterDisplay.setText(`${(posV - negV).toFixed(2)} V`);
+            } else if (negV !== null || posV !== null) {
               this.meterDisplay.setText('OPEN');
             } else {
               this.meterDisplay.setText('0.00 V');
@@ -431,6 +436,7 @@
       document.addEventListener('DOMContentLoaded', () => {
         const options = new xb.Options();
         options.enableUI(); options.enableReticles();
+        options.enableDepth();
         options.controllers.visualizeRays = false;
         xb.add(new BatteryLabScript());
         xb.init(options);
