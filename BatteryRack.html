@@ -44,6 +44,7 @@
           // Interaction States
           this.grabbingClip = null;
           this.grabbingUnit = null; 
+          this.grabbingProbe = null;
           
           this.nodeVoltages = new Map();
           this.panelOpen = false;
@@ -54,6 +55,7 @@
           this.switchLever = null;
           this.meterDisplay = null;
           this.multimeterBody = null;
+          this.probesArray = []; // Hitboxes for grabbing probes
           this.probes = { left: null, right: null };
           this.probeWires = { left: null, right: null };
           
@@ -71,7 +73,7 @@
 
           // Add a floating instruction panel for user context
           const instructions = new xb.TextView({
-            text: "CONTROLS\nTrigger: Toggle Switch & Door\nGrip: Grab Wires & Equipment",
+            text: "CONTROLS\nTrigger: Toggle Switch & Door\nGrip: Grab Wires, Probes, & Equipment",
             fontSize: 0.08,
             fontColor: "#ffffff",
             backgroundColor: "#00000088",
@@ -174,12 +176,36 @@
           group.userData.isUnit = true;
           this.add(group);
 
-          const box = new THREE.Mesh(
-            new THREE.BoxGeometry(0.6, 0.8, 0.3), 
-            new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.5 })
-          );
-          group.add(box);
-          this.grabbables.push(box);
+          // Create a hollow box
+          const boxGroup = new THREE.Group();
+          const mat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.5 });
+          const thickness = 0.02;
+          const width = 0.6;
+          const height = 0.8;
+          const depth = 0.3;
+
+          const back = new THREE.Mesh(new THREE.BoxGeometry(width, height, thickness), mat);
+          back.position.set(0, 0, -depth/2 + thickness/2);
+          boxGroup.add(back);
+
+          const left = new THREE.Mesh(new THREE.BoxGeometry(thickness, height, depth), mat);
+          left.position.set(-width/2 + thickness/2, 0, 0);
+          boxGroup.add(left);
+
+          const right = new THREE.Mesh(new THREE.BoxGeometry(thickness, height, depth), mat);
+          right.position.set(width/2 - thickness/2, 0, 0);
+          boxGroup.add(right);
+
+          const top = new THREE.Mesh(new THREE.BoxGeometry(width, thickness, depth), mat);
+          top.position.set(0, height/2 - thickness/2, 0);
+          boxGroup.add(top);
+
+          const bottom = new THREE.Mesh(new THREE.BoxGeometry(width, thickness, depth), mat);
+          bottom.position.set(0, -height/2 + thickness/2, 0);
+          boxGroup.add(bottom);
+
+          group.add(boxGroup);
+          this.grabbables.push(back, left, right, top, bottom);
 
           const doorGroup = new THREE.Group();
           doorGroup.position.set(-0.3, 0, 0.15);
@@ -210,23 +236,28 @@
           this.switchLever = leverGroup;
           this.clickables.push(handleBar);
 
+          // Place terminals INSIDE the hollow box, protruding from the back wall
           this.tInPos = this.createTerminal(0xcc0000, "PANEL-IN+", -1);
-          this.tInPos.position.set(-0.15, -0.2, 0.05);
+          this.tInPos.position.set(-0.15, 0.15, -0.1);
+          this.tInPos.rotation.x = Math.PI / 2;
           group.add(this.tInPos);
           this.terminals.push(this.tInPos);
 
           this.tInNeg = this.createTerminal(0x222222, "PANEL-IN-", -1);
-          this.tInNeg.position.set(-0.15, -0.3, 0.05);
+          this.tInNeg.position.set(-0.15, -0.15, -0.1);
+          this.tInNeg.rotation.x = Math.PI / 2;
           group.add(this.tInNeg);
           this.terminals.push(this.tInNeg);
 
           this.tOutPos = this.createTerminal(0xcc0000, "PANEL-OUT+", -1);
-          this.tOutPos.position.set(0.15, -0.2, 0.05);
+          this.tOutPos.position.set(0.15, 0.15, -0.1);
+          this.tOutPos.rotation.x = Math.PI / 2;
           group.add(this.tOutPos);
           this.terminals.push(this.tOutPos);
 
           this.tOutNeg = this.createTerminal(0x222222, "PANEL-OUT-", -1);
-          this.tOutNeg.position.set(0.15, -0.3, 0.05);
+          this.tOutNeg.position.set(0.15, -0.15, -0.1);
+          this.tOutNeg.rotation.x = Math.PI / 2;
           group.add(this.tOutNeg);
           this.terminals.push(this.tOutNeg);
         }
@@ -238,14 +269,21 @@
           this.add(group);
           this.multimeterBody = group; // Store reference for wire connection
 
-          const body = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.4), new THREE.MeshStandardMaterial({color: 0xffaa00}));
+          // Make the multimeter much smaller
+          const body = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.05, 0.2), new THREE.MeshStandardMaterial({color: 0xffaa00}));
           group.add(body);
           this.grabbables.push(body);
 
-          const screen = new xb.SpatialPanel({ width: 0.25, height: 0.15, backgroundColor: '#050a05' });
-          screen.position.set(0, 0.051, 0.05); screen.rotation.x = -Math.PI/2;
-          group.add(screen);
-          this.meterDisplay = screen.addGrid().addRow().addText({ text: '0.00 V', fontSize: 0.06, fontColor: '#55ff55' });
+          // Black screen background physically attached to the geometry
+          const screenBg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.052, 0.08), new THREE.MeshStandardMaterial({color: 0x050a05}));
+          screenBg.position.set(0, 0, 0.04);
+          group.add(screenBg);
+
+          // Hardcoded TextView guarantees it never floats away or disconnects
+          this.meterDisplay = new xb.TextView({ text: '0.00 V', fontSize: 0.03, fontColor: '#55ff55' });
+          this.meterDisplay.position.set(0, 0.027, 0.04);
+          this.meterDisplay.rotation.x = -Math.PI/2;
+          group.add(this.meterDisplay);
         }
 
         createJumperBin(pos) {
@@ -299,46 +337,68 @@
         }
 
         setupHandProbes() {
-          const createProbe = (color) => {
+          this.probesArray = [];
+          
+          const createProbe = (color, isRed) => {
             const g = new THREE.Group();
+            g.userData.isProbe = true;
+            g.userData.isRed = isRed;
             
             // Base handle (Grip portion)
-            const handleGeom = new THREE.CylinderGeometry(0.012, 0.015, 0.12, 16);
+            const handleGeom = new THREE.CylinderGeometry(0.008, 0.008, 0.1, 16);
             const handleMat = new THREE.MeshStandardMaterial({color: color, roughness: 0.6});
             const handle = new THREE.Mesh(handleGeom, handleMat);
             handle.rotation.x = Math.PI / 2;
-            handle.position.z = -0.06; 
             g.add(handle);
             
             // Finger Guard
-            const guardGeom = new THREE.CylinderGeometry(0.018, 0.018, 0.01, 16);
+            const guardGeom = new THREE.CylinderGeometry(0.012, 0.012, 0.01, 16);
             const guard = new THREE.Mesh(guardGeom, handleMat);
             guard.rotation.x = Math.PI / 2;
-            guard.position.z = -0.12;
+            guard.position.z = -0.05;
             g.add(guard);
 
             // Metal Contact Needle
-            const needleGeom = new THREE.CylinderGeometry(0.001, 0.003, 0.06, 8);
+            const needleGeom = new THREE.CylinderGeometry(0.001, 0.002, 0.05, 8);
             const needleMat = new THREE.MeshStandardMaterial({color: 0xcccccc, metalness: 1.0, roughness: 0.2});
             const needle = new THREE.Mesh(needleGeom, needleMat);
             needle.rotation.x = Math.PI / 2;
-            needle.position.z = -0.155; 
+            needle.position.z = -0.08; 
             g.add(needle);
 
+            // Invisible Hitbox for easier grabbing
+            const hitBoxGeom = new THREE.CylinderGeometry(0.03, 0.03, 0.15, 8);
+            const hitBoxMat = new THREE.MeshBasicMaterial({visible: false});
+            const hitBox = new THREE.Mesh(hitBoxGeom, hitBoxMat);
+            hitBox.rotation.x = Math.PI / 2;
+            hitBox.position.z = -0.03;
+            g.add(hitBox);
+            g.userData.hitBox = hitBox; // Store for raycasting
+            
             return g;
           };
           
-          this.probes.left = createProbe(0x222222);  // COM (Black)
-          this.probes.right = createProbe(0xcc0000); // VΩmA (Red)
+          this.probes.left = createProbe(0x222222, false);  // COM (Black)
+          this.probes.right = createProbe(0xcc0000, true); // VΩmA (Red)
+
+          // Position them independently on the table
+          this.probes.left.position.set(0.15, 0.8, -0.6);
+          this.probes.right.position.set(0.45, 0.8, -0.6);
+          this.probes.left.rotation.y = Math.PI / 4;
+          this.probes.right.rotation.y = -Math.PI / 4;
+
+          this.add(this.probes.left);
+          this.add(this.probes.right);
+          this.probesArray.push(this.probes.left.userData.hitBox, this.probes.right.userData.hitBox);
 
           // Wires connecting probes to multimeter body
           const dummyCurve = new THREE.LineCurve3(new THREE.Vector3(), new THREE.Vector3(0,0.1,0));
           this.probeWires.left = new THREE.Mesh(
-            new THREE.TubeGeometry(dummyCurve, 10, 0.005, 8, false), 
+            new THREE.TubeGeometry(dummyCurve, 10, 0.003, 8, false), 
             new THREE.MeshStandardMaterial({ color: 0x111111 })
           );
           this.probeWires.right = new THREE.Mesh(
-            new THREE.TubeGeometry(dummyCurve, 10, 0.005, 8, false), 
+            new THREE.TubeGeometry(dummyCurve, 10, 0.003, 8, false), 
             new THREE.MeshStandardMaterial({ color: 0xaa0000 })
           );
 
@@ -348,7 +408,8 @@
 
         solveCircuit() {
           this.nodeVoltages.clear();
-          const ground = this.terminals.find(t => t.userData.isGround);
+          const validTerminals = this._getValidTargets(this.terminals);
+          const ground = validTerminals.find(t => t.userData.isGround);
           if (!ground) return;
 
           const queue = [{ node: ground, voltage: 0 }];
@@ -403,9 +464,20 @@
         onSqueezeStart(event) {
           const c = event.target;
           
-          // Priority 1: Check for Jumper Clips
+          // Priority 1: Check for Grabbable Probes
+          const validProbes = this._getValidTargets(this.probesArray);
+          const probeHit = this._intersectObjects(c, validProbes);
+          if (probeHit.length > 0) {
+            const hitBox = probeHit[0].object;
+            const targetProbe = hitBox.parent; 
+            const dist = c.position.distanceTo(targetProbe.getWorldPosition(new THREE.Vector3()));
+            this.grabbingProbe = { object: targetProbe, controller: c, distance: dist };
+            return;
+          }
+          
+          // Priority 2: Check for Jumper Clips
           const clips = this.jumpers.flatMap(j => [j.clipA, j.clipB]);
-          const clipHit = this._intersectObjects(c, clips);
+          const clipHit = this._intersectObjects(c, this._getValidTargets(clips));
           
           if (clipHit.length > 0) {
             const targetClip = clipHit[0].object;
@@ -420,8 +492,8 @@
             return; // Don't grab a unit if we successfully grabbed a clip
           }
 
-          // Priority 2: Check for Equipment Units
-          const unitHit = this._intersectObjects(c, this.grabbables);
+          // Priority 3: Check for Equipment Units
+          const unitHit = this._intersectObjects(c, this._getValidTargets(this.grabbables));
           if (unitHit.length > 0) {
             let parent = unitHit[0].object;
             while(parent && !parent.userData.isUnit) parent = parent.parent;
@@ -433,7 +505,12 @@
         }
 
         onSqueezeEnd() {
-          // Snap clip to nearest terminal when released
+          // Release Multimeter Probes
+          if (this.grabbingProbe) {
+             this.grabbingProbe = null;
+          }
+          
+          // Snap Jumper Clip to nearest terminal when released
           if (this.grabbingClip) {
             const clip = this.grabbingClip.object;
             let closest = null, minDist = 0.15; // 15cm snap radius
@@ -493,29 +570,37 @@
             object.lookAt(lookTarget);
           }
 
-          // 2. Controller & Probe Visual Sync with Multimeter body wires
+          // 2. Multimeter Probe Grab Movement & Wire Drawing
+          if (this.grabbingProbe) {
+            const { object, controller, distance } = this.grabbingProbe;
+            const targetWorldPos = controller.localToWorld(new THREE.Vector3(0, 0, -distance));
+            
+            // Align the probe direction with the controller's pointing direction
+            const lookPos = controller.localToWorld(new THREE.Vector3(0, 0, -(distance + 1)));
+            
+            object.position.lerp(targetWorldPos, 0.4);
+            object.lookAt(lookPos);
+          }
+
           ['left', 'right'].forEach(h => {
-             const c = controllers.find(ctrl => ctrl && ctrl.userData.handedness === h);
-             if (c && this.probes[h]) {
-               if (this.probes[h].parent !== c) c.add(this.probes[h]);
-               
-               // Update dynamic wire between multimeter body and hand probe
-               if (this.multimeterBody) {
-                  const mmPos = this.multimeterBody.getWorldPosition(new THREE.Vector3());
-                  mmPos.x += (h === 'left' ? -0.1 : 0.1); // Wires exit from sides of meter
-                  const probePos = this.probes[h].getWorldPosition(new THREE.Vector3());
-                  
-                  const mid = mmPos.clone().lerp(probePos, 0.5);
-                  mid.y -= mmPos.distanceTo(probePos) * 0.4; // Droop
-                  
-                  const curve = new THREE.CatmullRomCurve3([mmPos, mid, probePos]);
-                  if (this.probeWires[h].geometry) this.probeWires[h].geometry.dispose();
-                  this.probeWires[h].geometry = new THREE.TubeGeometry(curve, 10, 0.005, 8, false);
-               }
+             const probe = this.probes[h];
+             if (this.multimeterBody && probe) {
+                const mmPos = this.multimeterBody.getWorldPosition(new THREE.Vector3());
+                mmPos.x += (h === 'left' ? -0.07 : 0.07); // Wires exit from sides of meter
+                
+                // Back of the probe handle
+                const wireAttachPos = probe.localToWorld(new THREE.Vector3(0, 0, 0.05));
+                
+                const mid = mmPos.clone().lerp(wireAttachPos, 0.5);
+                mid.y -= mmPos.distanceTo(wireAttachPos) * 0.4; // Droop effect
+                
+                const curve = new THREE.CatmullRomCurve3([mmPos, mid, wireAttachPos]);
+                if (this.probeWires[h].geometry) this.probeWires[h].geometry.dispose();
+                this.probeWires[h].geometry = new THREE.TubeGeometry(curve, 10, 0.003, 8, false);
              }
           });
 
-          // 3. Jumper Clip Movement
+          // 3. Jumper Clip Movement & Drooping Wires
           if (this.grabbingClip) {
             const { object, controller, distance } = this.grabbingClip;
             const targetWorldPos = controller.localToWorld(new THREE.Vector3(0, 0, -distance));
@@ -523,7 +608,6 @@
             object.position.lerp(targetWorldPos, 0.4);
           }
 
-          // 4. Dynamic Jumper Wires with simulated drooping
           this.jumpers.forEach(j => {
             // Force clips to stick to their attached terminals in world space
             if (j.attachedA) {
@@ -550,7 +634,7 @@
             j.tube.geometry = new THREE.TubeGeometry(curve, 10, 0.005, 8, false);
           });
 
-          // 5. Equipment Highlight (Hover glow for grab points)
+          // 4. Equipment Highlight (Hover glow for grab points)
           this.grabbables.forEach(g => { if(g && g.material) g.material.emissiveIntensity = 0; });
           controllers.forEach(c => {
             const hover = this._intersectObjects(c, this.grabbables);
@@ -563,41 +647,40 @@
             }
           });
 
-          // 6. Physical Multimeter Probing (Distance-based physical contact)
-          this.terminals.forEach(t => { if(t && t.material) t.material.emissiveIntensity = 0.1; });
+          // 5. Physical Multimeter Probing 
+          const activeTerminals = this._getValidTargets(this.terminals);
+          activeTerminals.forEach(t => { if(t.material) t.material.emissiveIntensity = 0.1; });
 
           let negV = null, posV = null;
           
-          controllers.forEach(c => {
-            const h = c.userData.handedness;
-            if (h && this.probes[h]) {
-              // Calculate exact world position of the needle tip
-              // Center is 0, handle backward to -0.06, needle forward to -0.155, offset puts tip at -0.185
-              const tipWorldPos = this.probes[h].localToWorld(new THREE.Vector3(0, 0, -0.185));
-              
-              let closestT = null;
-              let minDist = 0.035; // 3.5cm physical contact radius for precise probing
+          ['left', 'right'].forEach(h => {
+             const probe = this.probes[h];
+             if (probe) {
+                // Calculate exact world position of the needle tip
+                const tipWorldPos = probe.localToWorld(new THREE.Vector3(0, 0, -0.105)); 
+                
+                let closestT = null;
+                let minDist = 0.035; // 3.5cm physical contact radius
 
-              this.terminals.forEach(t => {
-                if (!t) return;
-                const tWorld = t.getWorldPosition(new THREE.Vector3());
-                const dist = tWorld.distanceTo(tipWorldPos);
-                if (dist < minDist) {
-                  minDist = dist;
-                  closestT = t;
+                activeTerminals.forEach(t => {
+                  const tWorld = t.getWorldPosition(new THREE.Vector3());
+                  const dist = tWorld.distanceTo(tipWorldPos);
+                  if (dist < minDist) {
+                    minDist = dist;
+                    closestT = t;
+                  }
+                });
+
+                if (closestT) {
+                  closestT.material.emissiveIntensity = 2.0;
+                  const v = this.nodeVoltages.get(closestT);
+                  if (h === 'left') negV = v;
+                  else if (h === 'right') posV = v;
                 }
-              });
-
-              if (closestT) {
-                closestT.material.emissiveIntensity = 2.0;
-                const v = this.nodeVoltages.get(closestT);
-                if (h === 'left') negV = v;
-                else if (h === 'right') posV = v;
-              }
-            }
+             }
           });
 
-          // 7. Update Digital Readout
+          // 6. Update Digital Readout
           if (this.meterDisplay) {
             if (negV !== null && posV !== null) {
               this.meterDisplay.setText(`${(posV - negV).toFixed(2)} V`);
