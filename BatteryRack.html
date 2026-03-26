@@ -328,32 +328,37 @@
             const g = new THREE.Group();
             g.userData.isProbe = true;
             g.userData.isRed = isRed;
-            g.userData.attachedTo = null; // Used for snapping
+            g.userData.attachedTo = null; 
             
+            // Base handle length 0.1, centered at -0.05 
             const handleGeom = new THREE.CylinderGeometry(0.008, 0.008, 0.1, 16);
             const handleMat = new THREE.MeshStandardMaterial({color: color, roughness: 0.6});
             const handle = new THREE.Mesh(handleGeom, handleMat);
             handle.rotation.x = Math.PI / 2;
+            handle.position.z = -0.05;
             g.add(handle);
             
+            // Finger Guard
             const guardGeom = new THREE.CylinderGeometry(0.012, 0.012, 0.01, 16);
             const guard = new THREE.Mesh(guardGeom, handleMat);
             guard.rotation.x = Math.PI / 2;
-            guard.position.z = -0.05;
+            guard.position.z = -0.1;
             g.add(guard);
 
+            // Metal Contact Needle length 0.05, centered at -0.125
             const needleGeom = new THREE.CylinderGeometry(0.001, 0.002, 0.05, 8);
             const needleMat = new THREE.MeshStandardMaterial({color: 0xcccccc, metalness: 1.0, roughness: 0.2});
             const needle = new THREE.Mesh(needleGeom, needleMat);
             needle.rotation.x = Math.PI / 2;
-            needle.position.z = -0.08; 
+            needle.position.z = -0.125; 
             g.add(needle);
 
-            const hitBoxGeom = new THREE.CylinderGeometry(0.03, 0.03, 0.15, 8);
+            // HitBox enclosing the handle
+            const hitBoxGeom = new THREE.CylinderGeometry(0.03, 0.03, 0.12, 8);
             const hitBoxMat = new THREE.MeshBasicMaterial({visible: false});
             const hitBox = new THREE.Mesh(hitBoxGeom, hitBoxMat);
             hitBox.rotation.x = Math.PI / 2;
-            hitBox.position.z = -0.03;
+            hitBox.position.z = -0.05;
             g.add(hitBox);
             g.userData.hitBox = hitBox; 
             
@@ -424,7 +429,6 @@
         // TRIGGER / CLICK
         onSelectStart(event) {
           const c = event.target;
-          // Trigger ONLY interacts with clickables (Door, Switch)
           const hitClick = this._intersectObjects(c, this.clickables);
           if (hitClick.length > 0) {
             const obj = hitClick[0].object;
@@ -488,7 +492,7 @@
           // Snap Probes to terminal
           if (this.grabbingProbe && this.grabbingProbe.controller === c) {
             const probe = this.grabbingProbe.object;
-            const tipWorldPos = probe.localToWorld(new THREE.Vector3(0, 0, -0.180));
+            const tipWorldPos = probe.localToWorld(new THREE.Vector3(0, 0, -0.15));
             let closest = null, minDist = 0.15; // 15cm snap threshold
             
             this.terminals.forEach(t => {
@@ -535,9 +539,10 @@
           const controllers = xb.core.input.controllers;
           if (!controllers || controllers.length === 0) return;
 
-          // 1. Equipment Unit Movement & Floor Snapping
+          // 1. Equipment Unit Grabbing & Room-Scale Placement
           if (this.grabbingUnit) {
             const { object, controller, distance } = this.grabbingUnit;
+            
             let intersection = null;
             if (xb.core.depth && xb.core.depth.depthMesh) {
                 try {
@@ -570,15 +575,18 @@
                   probe.position.lerp(targetWorldPos, 0.4);
                   probe.lookAt(lookPos);
                 } 
-                // Terminal Snap Logic (dynamically updates position if terminal moves)
+                // Terminal Snap Logic: Tilt to ensure the metal point touches accurately without gimbal lock
                 else if (probe.userData.attachedTo) {
                   const terminal = probe.userData.attachedTo;
                   const terminalWorld = terminal.getWorldPosition(new THREE.Vector3());
-                  // Local Y points outward from the cylinder face
                   const outDir = new THREE.Vector3(0, 1, 0).transformDirection(terminal.matrixWorld).normalize();
                   
-                  probe.position.copy(terminalWorld).add(outDir.multiplyScalar(0.180));
-                  probe.lookAt(terminalWorld);
+                  // Position the exact tip (z=-0.15) at the top of the terminal face
+                  const targetTipWorld = terminalWorld.clone().add(outDir.clone().multiplyScalar(0.02));
+                  const tilt = new THREE.Vector3(0.5, 1, 0.5).normalize(); 
+                  
+                  probe.position.copy(targetTipWorld).add(tilt.clone().multiplyScalar(0.15));
+                  probe.lookAt(targetTipWorld);
                 }
 
                 // Render physical connecting wires
@@ -586,7 +594,7 @@
                   const mmPos = this.multimeterBody.getWorldPosition(new THREE.Vector3());
                   mmPos.x += (h === 'left' ? -0.07 : 0.07); 
                   
-                  const wireAttachPos = probe.localToWorld(new THREE.Vector3(0, 0, 0.05));
+                  const wireAttachPos = probe.localToWorld(new THREE.Vector3(0, 0, 0)); // Wire connects at the back (z=0)
                   const mid = mmPos.clone().lerp(wireAttachPos, 0.5);
                   mid.y -= mmPos.distanceTo(wireAttachPos) * 0.4; 
                   
@@ -641,7 +649,7 @@
             }
           });
 
-          // 6. Multimeter Physics & Readouts
+          // 6. Physical Multimeter Probing (Distance-based physical contact)
           const activeTerminals = this._getValidTargets(this.terminals);
           activeTerminals.forEach(t => { if(t.material) t.material.emissiveIntensity = 0.1; });
 
@@ -650,9 +658,11 @@
           ['left', 'right'].forEach(h => {
              const probe = this.probes[h];
              if (probe) {
-                const tipWorldPos = probe.localToWorld(new THREE.Vector3(0, 0, -0.180)); 
+                // Point of calculation mapped perfectly to the actual metal needle tip
+                const tipWorldPos = probe.localToWorld(new THREE.Vector3(0, 0, -0.15)); 
+                
                 let closestT = null;
-                let minDist = 0.04; 
+                let minDist = 0.05; // 5cm physical contact radius for precise probing
 
                 activeTerminals.forEach(t => {
                   const tWorld = t.getWorldPosition(new THREE.Vector3());
@@ -691,6 +701,11 @@
         options.enableReticles();
         options.enableDepth(); 
         options.controllers.visualizeRays = true;
+        
+        // Enable VR hands/controller visualization
+        options.enableHands();
+        options.hands.visualization = true;
+        options.hands.visualizeMeshes = true;
         
         xb.add(new BatteryLabScript());
         xb.init(options);
