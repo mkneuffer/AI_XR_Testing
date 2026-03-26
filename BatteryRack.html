@@ -53,7 +53,9 @@
           this.panelDoor = null;
           this.switchLever = null;
           this.meterDisplay = null;
+          this.multimeterBody = null;
           this.probes = { left: null, right: null };
+          this.probeWires = { left: null, right: null };
           
           // Separate interaction arrays to keep Trigger and Grip interactions cleanly divided
           this.clickables = [];
@@ -193,14 +195,16 @@
           this.clickables.push(handle);
           group.add(doorGroup);
 
+          // Position Lever Base on the RIGHT SIDE of the panel
           const leverBase = new THREE.Group();
-          leverBase.position.set(0, 0.1, 0);
+          leverBase.position.set(0.32, 0, 0); 
           group.add(leverBase);
-          const handleBar = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.2, 0.04), new THREE.MeshStandardMaterial({ color: 0xaa0000 }));
-          handleBar.position.y = 0.1;
+          
+          const handleBar = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.3, 0.04), new THREE.MeshStandardMaterial({ color: 0xaa0000 }));
+          handleBar.position.y = 0.15; // Shift to rotate from the base
           const leverGroup = new THREE.Group();
           leverGroup.add(handleBar);
-          leverGroup.rotation.x = Math.PI / 4;
+          leverGroup.rotation.x = Math.PI; // OFF (Pointing down)
           leverGroup.userData.isSwitch = true;
           leverBase.add(leverGroup);
           this.switchLever = leverGroup;
@@ -232,6 +236,7 @@
           group.position.copy(pos);
           group.userData.isUnit = true;
           this.add(group);
+          this.multimeterBody = group; // Store reference for wire connection
 
           const body = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.4), new THREE.MeshStandardMaterial({color: 0xffaa00}));
           group.add(body);
@@ -294,7 +299,7 @@
         }
 
         setupHandProbes() {
-          const create = (color) => {
+          const createProbe = (color) => {
             const g = new THREE.Group();
             
             // Base handle (Grip portion)
@@ -302,7 +307,7 @@
             const handleMat = new THREE.MeshStandardMaterial({color: color, roughness: 0.6});
             const handle = new THREE.Mesh(handleGeom, handleMat);
             handle.rotation.x = Math.PI / 2;
-            handle.position.z = -0.06; // Shifted out of controller
+            handle.position.z = -0.06; 
             g.add(handle);
             
             // Finger Guard
@@ -323,8 +328,22 @@
             return g;
           };
           
-          this.probes.left = create(0x222222);  // COM (Black)
-          this.probes.right = create(0xcc0000); // VΩmA (Red)
+          this.probes.left = createProbe(0x222222);  // COM (Black)
+          this.probes.right = createProbe(0xcc0000); // VΩmA (Red)
+
+          // Wires connecting probes to multimeter body
+          const dummyCurve = new THREE.LineCurve3(new THREE.Vector3(), new THREE.Vector3(0,0.1,0));
+          this.probeWires.left = new THREE.Mesh(
+            new THREE.TubeGeometry(dummyCurve, 10, 0.005, 8, false), 
+            new THREE.MeshStandardMaterial({ color: 0x111111 })
+          );
+          this.probeWires.right = new THREE.Mesh(
+            new THREE.TubeGeometry(dummyCurve, 10, 0.005, 8, false), 
+            new THREE.MeshStandardMaterial({ color: 0xaa0000 })
+          );
+
+          this.add(this.probeWires.left);
+          this.add(this.probeWires.right);
         }
 
         solveCircuit() {
@@ -374,7 +393,7 @@
               this.panelDoor.rotation.y = this.panelOpen ? -Math.PI / 1.5 : 0;
             } else if (obj.userData.isSwitch || (obj.parent && obj.parent.userData.isSwitch)) {
               this.switchOn = !this.switchOn;
-              this.switchLever.rotation.x = this.switchOn ? -Math.PI / 4 : Math.PI / 4;
+              this.switchLever.rotation.x = this.switchOn ? 0 : Math.PI; // 0 = UP (ON), Math.PI = DOWN (OFF)
               this.solveCircuit();
             }
           }
@@ -474,12 +493,26 @@
             object.lookAt(lookTarget);
           }
 
-          // 2. Controller & Probe Visual Sync
-          controllers.forEach(c => {
-            const h = c.userData.handedness;
-            if (h && this.probes[h]) {
-              if (this.probes[h].parent !== c) c.add(this.probes[h]);
-            }
+          // 2. Controller & Probe Visual Sync with Multimeter body wires
+          ['left', 'right'].forEach(h => {
+             const c = controllers.find(ctrl => ctrl && ctrl.userData.handedness === h);
+             if (c && this.probes[h]) {
+               if (this.probes[h].parent !== c) c.add(this.probes[h]);
+               
+               // Update dynamic wire between multimeter body and hand probe
+               if (this.multimeterBody) {
+                  const mmPos = this.multimeterBody.getWorldPosition(new THREE.Vector3());
+                  mmPos.x += (h === 'left' ? -0.1 : 0.1); // Wires exit from sides of meter
+                  const probePos = this.probes[h].getWorldPosition(new THREE.Vector3());
+                  
+                  const mid = mmPos.clone().lerp(probePos, 0.5);
+                  mid.y -= mmPos.distanceTo(probePos) * 0.4; // Droop
+                  
+                  const curve = new THREE.CatmullRomCurve3([mmPos, mid, probePos]);
+                  if (this.probeWires[h].geometry) this.probeWires[h].geometry.dispose();
+                  this.probeWires[h].geometry = new THREE.TubeGeometry(curve, 10, 0.005, 8, false);
+               }
+             }
           });
 
           // 3. Jumper Clip Movement
@@ -539,7 +572,8 @@
             const h = c.userData.handedness;
             if (h && this.probes[h]) {
               // Calculate exact world position of the needle tip
-              const tipWorldPos = this.probes[h].localToWorld(new THREE.Vector3(0, 0, -0.155));
+              // Center is 0, handle backward to -0.06, needle forward to -0.155, offset puts tip at -0.185
+              const tipWorldPos = this.probes[h].localToWorld(new THREE.Vector3(0, 0, -0.185));
               
               let closestT = null;
               let minDist = 0.035; // 3.5cm physical contact radius for precise probing
