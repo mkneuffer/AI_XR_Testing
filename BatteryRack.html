@@ -33,7 +33,7 @@
 
       /**
        * Modular Mixed Reality Battery Lab.
-       * Supports individual piece grabbing and placement on real-world surfaces.
+       * Fully supports physical controllers, dynamic grabbing, and room-scale placement.
        */
       class BatteryLabScript extends xb.Script {
         constructor() {
@@ -66,7 +66,7 @@
           dirLight.position.set(5, 10, 5);
           this.add(dirLight);
 
-          // Create equipment as independent units
+          // Create equipment as independent modular units
           this.createModularRack(new THREE.Vector3(-1, 0, -1.2));
           this.createModularPanel(new THREE.Vector3(1, 0.8, -1.0));
           this.createModularMultimeter(new THREE.Vector3(0.3, 0.8, -0.6));
@@ -75,7 +75,7 @@
           this.setupHandProbes();
           this.solveCircuit();
 
-          // Standard XR visual indicators
+          // Standard XR visual indicators for environment
           xb.showReticleOnDepthMesh(true);
         }
 
@@ -105,6 +105,7 @@
             const s = new THREE.Mesh(new THREE.BoxGeometry(rackWidth, 0.04, rackDepth), frameMat.clone());
             s.position.y = y;
             group.add(s);
+            this.grabbables.push(s); // Shelves are also grabbable
           });
 
           let idx = 0;
@@ -259,14 +260,35 @@
         setupHandProbes() {
           const create = (color) => {
             const g = new THREE.Group();
-            const h = new THREE.Mesh(new THREE.CylinderGeometry(0.01,0.01,0.15), new THREE.MeshStandardMaterial({color}));
-            h.rotation.x = Math.PI/2; g.add(h);
-            const n = new THREE.Mesh(new THREE.CylinderGeometry(0.002,0.002,0.08), new THREE.MeshStandardMaterial({color:0x888888}));
-            n.position.z = -0.11; n.rotation.x = Math.PI/2; g.add(n);
+            
+            // Base handle (Grip portion)
+            const handleGeom = new THREE.CylinderGeometry(0.012, 0.015, 0.12, 16);
+            const handleMat = new THREE.MeshStandardMaterial({color: color, roughness: 0.6});
+            const handle = new THREE.Mesh(handleGeom, handleMat);
+            handle.rotation.x = Math.PI / 2;
+            handle.position.z = -0.06; // Shifted out of controller
+            g.add(handle);
+            
+            // Finger Guard
+            const guardGeom = new THREE.CylinderGeometry(0.018, 0.018, 0.01, 16);
+            const guard = new THREE.Mesh(guardGeom, handleMat);
+            guard.rotation.x = Math.PI / 2;
+            guard.position.z = -0.12;
+            g.add(guard);
+
+            // Metal Contact Needle
+            const needleGeom = new THREE.CylinderGeometry(0.001, 0.003, 0.06, 8);
+            const needleMat = new THREE.MeshStandardMaterial({color: 0xcccccc, metalness: 1.0, roughness: 0.2});
+            const needle = new THREE.Mesh(needleGeom, needleMat);
+            needle.rotation.x = Math.PI / 2;
+            needle.position.z = -0.155; 
+            g.add(needle);
+
             return g;
           };
-          this.probes.left = create(0x111111);
-          this.probes.right = create(0x990000);
+          
+          this.probes.left = create(0x222222);  // COM (Black)
+          this.probes.right = create(0xcc0000); // VΩmA (Red)
         }
 
         solveCircuit() {
@@ -326,23 +348,28 @@
         onSqueezeStart(event) {
           const c = event.target;
           
-          // 1. Check for Jumper Clips
+          // 1. Check for Jumper Clips (Higher Priority)
           const clips = [];
           this.jumpers.forEach(j => clips.push(j.clipA, j.clipB));
           const validClips = this._getValidTargets(clips);
           try {
             const clipHit = xb.core.input.intersectObjectByController(c, validClips);
             if (clipHit && clipHit.length > 0) {
-              this.grabbingClip = { object: clipHit[0].object, controller: c };
+              const targetClip = clipHit[0].object;
+              // Calculate distance to hold clip relative to controller ray
+              const dist = c.position.distanceTo(targetClip.getWorldPosition(new THREE.Vector3()));
+              this.grabbingClip = { object: targetClip, controller: c, distance: dist };
+              
+              // Un-anchor clip if connected
               this.jumpers.forEach(j => {
-                if (j.clipA === clipHit[0].object) j.attachedA = null;
-                if (j.clipB === clipHit[0].object) j.attachedB = null;
+                if (j.clipA === targetClip) j.attachedA = null;
+                if (j.clipB === targetClip) j.attachedB = null;
               });
               return;
             }
           } catch(e) {}
 
-          // 2. Check for Equipment Units
+          // 2. Check for Equipment Units (Lower Priority)
           const validUnits = this._getValidTargets(this.grabbables);
           try {
             const unitHit = xb.core.input.intersectObjectByController(c, validUnits);
@@ -350,21 +377,25 @@
               let parent = unitHit[0].object;
               while(parent && !parent.userData.isUnit) parent = parent.parent;
               if (parent) {
-                this.grabbingUnit = { object: parent, controller: c };
+                const dist = c.position.distanceTo(unitHit[0].point);
+                this.grabbingUnit = { object: parent, controller: c, distance: dist };
               }
             }
           } catch(e) {}
         }
 
         onSqueezeEnd() {
+          // Snap clip to nearest terminal when released
           if (this.grabbingClip) {
             const clip = this.grabbingClip.object;
-            let closest = null, minDist = 0.15;
+            let closest = null, minDist = 0.15; // 15cm snap radius
             const validTerminals = this._getValidTargets(this.terminals);
+            
             validTerminals.forEach(t => {
               const d = t.getWorldPosition(new THREE.Vector3()).distanceTo(clip.getWorldPosition(new THREE.Vector3()));
               if (d < minDist) { minDist = d; closest = t; }
             });
+            
             if (closest) {
               const worldPos = closest.getWorldPosition(new THREE.Vector3());
               clip.parent.worldToLocal(worldPos);
@@ -377,6 +408,7 @@
             this.grabbingClip = null;
             this.solveCircuit();
           }
+          
           this.grabbingUnit = null;
         }
 
@@ -384,20 +416,35 @@
           const controllers = xb.core.input.controllers;
           if (!controllers || controllers.length === 0) return;
 
-          // Equipment Unit Movement (Slides along physical surfaces)
+          // 1. Equipment Unit Grabbing & Room-Scale Placement
           if (this.grabbingUnit) {
-            const { object, controller } = this.grabbingUnit;
-            const intersection = xb.user.select(xb.core.depth.depthMesh, controller);
-            if (intersection) {
-              object.position.lerp(intersection.point, 0.2);
-              // Maintain upright orientation but face user
-              const lookTarget = xb.core.camera.position.clone();
-              lookTarget.y = object.position.y;
-              object.lookAt(lookTarget);
+            const { object, controller, distance } = this.grabbingUnit;
+            
+            // Safely select against the AR depth mesh
+            let intersection = null;
+            if (xb.core.depth && xb.core.depth.depthMesh) {
+                try {
+                   const hits = xb.core.input.intersectObjectByController(controller, [xb.core.depth.depthMesh]);
+                   if (hits && hits.length > 0) intersection = hits[0];
+                } catch(e) {}
             }
+
+            if (intersection) {
+              // Snap object to real-world floor/table
+              object.position.lerp(intersection.point, 0.2);
+            } else {
+              // Fallback: Float at the held distance in front of the controller
+              const targetWorld = controller.localToWorld(new THREE.Vector3(0, 0, -distance));
+              object.position.lerp(targetWorld, 0.2);
+            }
+
+            // Always maintain upright orientation and face the user
+            const lookTarget = xb.core.camera.position.clone();
+            lookTarget.y = object.position.y;
+            object.lookAt(lookTarget);
           }
 
-          // Probe Visual Sync
+          // 2. Controller & Probe Visual Sync
           controllers.forEach(c => {
             const h = c.userData.handedness;
             if (h && this.probes[h]) {
@@ -405,22 +452,36 @@
             }
           });
 
-          // Clip Movement Logic
+          // 3. Jumper Clip Movement
           if (this.grabbingClip) {
-            const { object, controller } = this.grabbingClip;
-            const targetPos = controller.position.clone();
-            object.parent.worldToLocal(targetPos);
-            object.position.lerp(targetPos, 0.2);
+            const { object, controller, distance } = this.grabbingClip;
+            // Hold the clip firmly at the end of the ray
+            const targetWorldPos = controller.localToWorld(new THREE.Vector3(0, 0, -distance));
+            object.parent.worldToLocal(targetWorldPos);
+            object.position.lerp(targetWorldPos, 0.4);
           }
 
-          // Dynamic Jumper Wire Geometry
+          // 4. Dynamic Jumper Wires (Prevents wire breaking when units are moved)
           this.jumpers.forEach(j => {
+            // Force clips to stick to their attached terminals in world space
+            if (j.attachedA) {
+              const wA = j.attachedA.getWorldPosition(new THREE.Vector3());
+              j.clipA.parent.worldToLocal(wA);
+              j.clipA.position.copy(wA);
+            }
+            if (j.attachedB) {
+              const wB = j.attachedB.getWorldPosition(new THREE.Vector3());
+              j.clipB.parent.worldToLocal(wB);
+              j.clipB.position.copy(wB);
+            }
+
+            // Re-draw flexible wire
             const curve = new THREE.CatmullRomCurve3([j.clipA.position.clone(), j.clipB.position.clone()]);
             if (j.tube.geometry) j.tube.geometry.dispose();
             j.tube.geometry = new THREE.TubeGeometry(curve, 10, 0.005, 8, false);
           });
 
-          // Equipment Highlight (Hover effect)
+          // 5. Equipment Highlight (Hover glow for grab points)
           const validGrabbables = this._getValidTargets(this.grabbables);
           validGrabbables.forEach(g => { if(g.material) g.material.emissiveIntensity = 0; });
           controllers.forEach(c => {
@@ -428,31 +489,49 @@
               const hover = xb.core.input.intersectObjectByController(c, validGrabbables);
               if (hover && hover.length > 0) {
                 const mesh = hover[0].object;
-                if (mesh.material) mesh.material.emissiveIntensity = 0.3;
-                if (mesh.material) mesh.material.emissive.set(0xffffff);
+                if (mesh.material) {
+                    mesh.material.emissive.set(0xffffff);
+                    mesh.material.emissiveIntensity = 0.2;
+                }
               }
             } catch(e) {}
           });
 
-          // Multimeter Terminal Contact logic
+          // 6. Physical Multimeter Probing (Distance-based contact, NO raycasting!)
           const activeTerminals = this._getValidTargets(this.terminals);
           activeTerminals.forEach(t => { if(t.material) t.material.emissiveIntensity = 0.1; });
 
           let negV = null, posV = null;
+          
           controllers.forEach(c => {
             const h = c.userData.handedness;
-            try {
-              const hit = xb.core.input.intersectObjectByController(c, activeTerminals);
-              if (hit && hit.length > 0) {
-                const node = hit[0].object;
-                node.material.emissiveIntensity = 2.0;
-                const v = this.nodeVoltages.get(node);
+            if (h && this.probes[h]) {
+              // Calculate exact world position of the needle tip
+              // Center is 0, handle goes backward, needle goes forward to z = -0.185
+              const tipWorldPos = this.probes[h].localToWorld(new THREE.Vector3(0, 0, -0.185));
+              
+              let closestT = null;
+              let minDist = 0.06; // 6cm physical contact radius
+
+              activeTerminals.forEach(t => {
+                const tWorld = t.getWorldPosition(new THREE.Vector3());
+                const dist = tWorld.distanceTo(tipWorldPos);
+                if (dist < minDist) {
+                  minDist = dist;
+                  closestT = t;
+                }
+              });
+
+              if (closestT) {
+                closestT.material.emissiveIntensity = 2.0;
+                const v = this.nodeVoltages.get(closestT);
                 if (h === 'left') negV = v;
                 else if (h === 'right') posV = v;
               }
-            } catch(e) {}
+            }
           });
 
+          // 7. Update Digital Readout
           if (this.meterDisplay) {
             if (negV !== null && posV !== null) {
               this.meterDisplay.setText(`${(posV - negV).toFixed(2)} V`);
@@ -467,9 +546,13 @@
 
       document.addEventListener('DOMContentLoaded', () => {
         const options = new xb.Options();
-        options.enableUI(); options.enableReticles();
-        options.enableDepth();
-        options.controllers.visualizeRays = false;
+        options.enableUI(); 
+        options.enableReticles();
+        options.enableDepth(); // Crucial for AR floor snapping
+        
+        // Visualize rays to make grabbing across the room easier
+        options.controllers.visualizeRays = true;
+        
         xb.add(new BatteryLabScript());
         xb.init(options);
       });
