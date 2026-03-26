@@ -55,6 +55,7 @@
           this.meterDisplay = null;
           this.probes = { left: null, right: null };
           
+          // Separate interaction arrays to keep Trigger and Grip interactions cleanly divided
           this.clickables = [];
           this.grabbables = []; 
         }
@@ -65,6 +66,18 @@
           const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
           dirLight.position.set(5, 10, 5);
           this.add(dirLight);
+
+          // Add a floating instruction panel for user context
+          const instructions = new xb.TextView({
+            text: "CONTROLS\nTrigger: Toggle Switch & Door\nGrip: Grab Wires & Equipment",
+            fontSize: 0.08,
+            fontColor: "#ffffff",
+            backgroundColor: "#00000088",
+            paddingX: 0.1,
+            paddingY: 0.1
+          });
+          instructions.position.set(0, 2.0, -1.5);
+          this.add(instructions);
 
           // Create equipment as independent modular units
           this.createModularRack(new THREE.Vector3(-1, 0, -1.2));
@@ -79,9 +92,25 @@
           xb.showReticleOnDepthMesh(true);
         }
 
-        /** Safety utility for filtering interaction targets */
-        _getValidTargets(arr) {
-          return (arr || []).filter(obj => obj && obj.isObject3D && obj.visible);
+        /** * Custom Safe Intersect method.
+         * Resolves the "test" TypeError by iterating and passing single objects to the raycaster.
+         */
+        _intersectObjects(controller, objectsArray) {
+          let closest = null;
+          for (const obj of objectsArray) {
+            if (!obj || !obj.isObject3D || !obj.visible) continue;
+            try {
+              const hits = xb.core.input.intersectObjectByController(controller, obj);
+              if (hits && hits.length > 0) {
+                if (!closest || hits[0].distance < closest.distance) {
+                  closest = hits[0];
+                }
+              }
+            } catch(e) {
+              // Silently catch raycast edge cases during scene initialization
+            }
+          }
+          return closest ? [closest] : [];
         }
 
         createModularRack(pos) {
@@ -250,10 +279,17 @@
           const clipA = new THREE.Mesh(clipGeom, clipMat.clone());
           const clipB = new THREE.Mesh(clipGeom, clipMat.clone());
           group.add(clipA, clipB);
-          const curve = new THREE.CatmullRomCurve3([clipA.position, clipB.position]);
+          
+          // Wire Tube initialized with a slight droop
+          const pA = clipA.position.clone();
+          const pB = clipB.position.clone();
+          const mid = pA.clone().lerp(pB, 0.5);
+          mid.y -= 0.1;
+          const curve = new THREE.CatmullRomCurve3([pA, mid, pB]);
           const tubeGeom = new THREE.TubeGeometry(curve, 10, 0.005, 8, false);
           const tube = new THREE.Mesh(tubeGeom, new THREE.MeshBasicMaterial({ color: 0x333333 }));
           group.add(tube);
+          
           return { group, clipA, clipB, tube, attachedA: null, attachedB: null };
         }
 
@@ -293,8 +329,7 @@
 
         solveCircuit() {
           this.nodeVoltages.clear();
-          const validTerminals = this._getValidTargets(this.terminals);
-          const ground = validTerminals.find(t => t.userData.isGround);
+          const ground = this.terminals.find(t => t.userData.isGround);
           if (!ground) return;
 
           const queue = [{ node: ground, voltage: 0 }];
@@ -326,62 +361,56 @@
           }
         }
 
+        // Trigger / Pinch Interaction
         onSelectStart(event) {
           const c = event.target;
-          const targets = this._getValidTargets(this.clickables);
-          try {
-            const hit = xb.core.input.intersectObjectByController(c, targets);
-            if (hit && hit.length > 0) {
-              const obj = hit[0].object;
-              if (obj.userData.isDoor || (obj.parent && obj.parent.userData.isDoor)) {
-                this.panelOpen = !this.panelOpen;
-                this.panelDoor.rotation.y = this.panelOpen ? -Math.PI / 1.5 : 0;
-              } else if (obj.userData.isSwitch || (obj.parent && obj.parent.userData.isSwitch)) {
-                this.switchOn = !this.switchOn;
-                this.switchLever.rotation.x = this.switchOn ? -Math.PI / 4 : Math.PI / 4;
-                this.solveCircuit();
-              }
+          
+          // Safe intersection using our custom method
+          const hit = this._intersectObjects(c, this.clickables);
+          if (hit.length > 0) {
+            const obj = hit[0].object;
+            if (obj.userData.isDoor || (obj.parent && obj.parent.userData.isDoor)) {
+              this.panelOpen = !this.panelOpen;
+              this.panelDoor.rotation.y = this.panelOpen ? -Math.PI / 1.5 : 0;
+            } else if (obj.userData.isSwitch || (obj.parent && obj.parent.userData.isSwitch)) {
+              this.switchOn = !this.switchOn;
+              this.switchLever.rotation.x = this.switchOn ? -Math.PI / 4 : Math.PI / 4;
+              this.solveCircuit();
             }
-          } catch(e) {}
+          }
         }
 
+        // Grip / Squeeze Interaction
         onSqueezeStart(event) {
           const c = event.target;
           
-          // 1. Check for Jumper Clips (Higher Priority)
-          const clips = [];
-          this.jumpers.forEach(j => clips.push(j.clipA, j.clipB));
-          const validClips = this._getValidTargets(clips);
-          try {
-            const clipHit = xb.core.input.intersectObjectByController(c, validClips);
-            if (clipHit && clipHit.length > 0) {
-              const targetClip = clipHit[0].object;
-              // Calculate distance to hold clip relative to controller ray
-              const dist = c.position.distanceTo(targetClip.getWorldPosition(new THREE.Vector3()));
-              this.grabbingClip = { object: targetClip, controller: c, distance: dist };
-              
-              // Un-anchor clip if connected
-              this.jumpers.forEach(j => {
-                if (j.clipA === targetClip) j.attachedA = null;
-                if (j.clipB === targetClip) j.attachedB = null;
-              });
-              return;
-            }
-          } catch(e) {}
+          // Priority 1: Check for Jumper Clips
+          const clips = this.jumpers.flatMap(j => [j.clipA, j.clipB]);
+          const clipHit = this._intersectObjects(c, clips);
+          
+          if (clipHit.length > 0) {
+            const targetClip = clipHit[0].object;
+            const dist = c.position.distanceTo(targetClip.getWorldPosition(new THREE.Vector3()));
+            this.grabbingClip = { object: targetClip, controller: c, distance: dist };
+            
+            // Un-anchor clip if connected
+            this.jumpers.forEach(j => {
+              if (j.clipA === targetClip) j.attachedA = null;
+              if (j.clipB === targetClip) j.attachedB = null;
+            });
+            return; // Don't grab a unit if we successfully grabbed a clip
+          }
 
-          // 2. Check for Equipment Units (Lower Priority)
-          const validUnits = this._getValidTargets(this.grabbables);
-          try {
-            const unitHit = xb.core.input.intersectObjectByController(c, validUnits);
-            if (unitHit && unitHit.length > 0) {
-              let parent = unitHit[0].object;
-              while(parent && !parent.userData.isUnit) parent = parent.parent;
-              if (parent) {
-                const dist = c.position.distanceTo(unitHit[0].point);
-                this.grabbingUnit = { object: parent, controller: c, distance: dist };
-              }
+          // Priority 2: Check for Equipment Units
+          const unitHit = this._intersectObjects(c, this.grabbables);
+          if (unitHit.length > 0) {
+            let parent = unitHit[0].object;
+            while(parent && !parent.userData.isUnit) parent = parent.parent;
+            if (parent) {
+              const dist = c.position.distanceTo(unitHit[0].point);
+              this.grabbingUnit = { object: parent, controller: c, distance: dist };
             }
-          } catch(e) {}
+          }
         }
 
         onSqueezeEnd() {
@@ -389,9 +418,9 @@
           if (this.grabbingClip) {
             const clip = this.grabbingClip.object;
             let closest = null, minDist = 0.15; // 15cm snap radius
-            const validTerminals = this._getValidTargets(this.terminals);
             
-            validTerminals.forEach(t => {
+            this.terminals.forEach(t => {
+              if (!t) return;
               const d = t.getWorldPosition(new THREE.Vector3()).distanceTo(clip.getWorldPosition(new THREE.Vector3()));
               if (d < minDist) { minDist = d; closest = t; }
             });
@@ -409,6 +438,7 @@
             this.solveCircuit();
           }
           
+          // Drop equipment unit
           this.grabbingUnit = null;
         }
 
@@ -420,11 +450,11 @@
           if (this.grabbingUnit) {
             const { object, controller, distance } = this.grabbingUnit;
             
-            // Safely select against the AR depth mesh
+            // Try to find the real floor
             let intersection = null;
             if (xb.core.depth && xb.core.depth.depthMesh) {
                 try {
-                   const hits = xb.core.input.intersectObjectByController(controller, [xb.core.depth.depthMesh]);
+                   const hits = xb.core.input.intersectObjectByController(controller, xb.core.depth.depthMesh);
                    if (hits && hits.length > 0) intersection = hits[0];
                 } catch(e) {}
             }
@@ -455,13 +485,12 @@
           // 3. Jumper Clip Movement
           if (this.grabbingClip) {
             const { object, controller, distance } = this.grabbingClip;
-            // Hold the clip firmly at the end of the ray
             const targetWorldPos = controller.localToWorld(new THREE.Vector3(0, 0, -distance));
             object.parent.worldToLocal(targetWorldPos);
             object.position.lerp(targetWorldPos, 0.4);
           }
 
-          // 4. Dynamic Jumper Wires (Prevents wire breaking when units are moved)
+          // 4. Dynamic Jumper Wires with simulated drooping
           this.jumpers.forEach(j => {
             // Force clips to stick to their attached terminals in world space
             if (j.attachedA) {
@@ -475,31 +504,34 @@
               j.clipB.position.copy(wB);
             }
 
-            // Re-draw flexible wire
-            const curve = new THREE.CatmullRomCurve3([j.clipA.position.clone(), j.clipB.position.clone()]);
+            const pA = j.clipA.position.clone();
+            const pB = j.clipB.position.clone();
+            
+            // Calculate a drooping midpoint for realism
+            const mid = pA.clone().lerp(pB, 0.5);
+            const dist = pA.distanceTo(pB);
+            mid.y -= dist * 0.3; // Droop depends on distance stretched
+            
+            const curve = new THREE.CatmullRomCurve3([pA, mid, pB]);
             if (j.tube.geometry) j.tube.geometry.dispose();
             j.tube.geometry = new THREE.TubeGeometry(curve, 10, 0.005, 8, false);
           });
 
           // 5. Equipment Highlight (Hover glow for grab points)
-          const validGrabbables = this._getValidTargets(this.grabbables);
-          validGrabbables.forEach(g => { if(g.material) g.material.emissiveIntensity = 0; });
+          this.grabbables.forEach(g => { if(g && g.material) g.material.emissiveIntensity = 0; });
           controllers.forEach(c => {
-            try {
-              const hover = xb.core.input.intersectObjectByController(c, validGrabbables);
-              if (hover && hover.length > 0) {
-                const mesh = hover[0].object;
-                if (mesh.material) {
-                    mesh.material.emissive.set(0xffffff);
-                    mesh.material.emissiveIntensity = 0.2;
-                }
+            const hover = this._intersectObjects(c, this.grabbables);
+            if (hover.length > 0) {
+              const mesh = hover[0].object;
+              if (mesh.material) {
+                  mesh.material.emissive.set(0xffffff);
+                  mesh.material.emissiveIntensity = 0.2;
               }
-            } catch(e) {}
+            }
           });
 
-          // 6. Physical Multimeter Probing (Distance-based contact, NO raycasting!)
-          const activeTerminals = this._getValidTargets(this.terminals);
-          activeTerminals.forEach(t => { if(t.material) t.material.emissiveIntensity = 0.1; });
+          // 6. Physical Multimeter Probing (Distance-based physical contact)
+          this.terminals.forEach(t => { if(t && t.material) t.material.emissiveIntensity = 0.1; });
 
           let negV = null, posV = null;
           
@@ -507,13 +539,13 @@
             const h = c.userData.handedness;
             if (h && this.probes[h]) {
               // Calculate exact world position of the needle tip
-              // Center is 0, handle goes backward, needle goes forward to z = -0.185
-              const tipWorldPos = this.probes[h].localToWorld(new THREE.Vector3(0, 0, -0.185));
+              const tipWorldPos = this.probes[h].localToWorld(new THREE.Vector3(0, 0, -0.155));
               
               let closestT = null;
-              let minDist = 0.06; // 6cm physical contact radius
+              let minDist = 0.035; // 3.5cm physical contact radius for precise probing
 
-              activeTerminals.forEach(t => {
+              this.terminals.forEach(t => {
+                if (!t) return;
                 const tWorld = t.getWorldPosition(new THREE.Vector3());
                 const dist = tWorld.distanceTo(tipWorldPos);
                 if (dist < minDist) {
